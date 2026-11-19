@@ -85,27 +85,8 @@ font_small = make_font(20)
 
 
 # ----------------------------------------------------------------------
-#  Фон: туманность рисуется один раз при запуске
+#  Фон: тёмный космос и падающие звёзды
 # ----------------------------------------------------------------------
-def make_nebula():
-    # рисуем в маленьком размере, а потом растягиваем — так круги размываются
-    small = pg.Surface((WIDTH // 4, HEIGHT // 4), pg.SRCALPHA)
-    colors = [(32, 58, 120), (62, 34, 104), (18, 74, 118)]
-    for i in range(34):
-        radius = random.randint(26, 64)
-        blob = pg.Surface((radius * 2, radius * 2), pg.SRCALPHA)
-        color = random.choice(colors)
-        for step in range(5):
-            r = int(radius * (1 - step / 6))
-            pg.draw.circle(blob, (color[0], color[1], color[2], 9), (radius, radius), r)
-        x = random.randint(-60, small.get_width()) - radius
-        y = random.randint(-60, small.get_height()) - radius
-        small.blit(blob, (x, y), special_flags=pg.BLEND_RGBA_ADD)
-    nebula = pg.transform.smoothscale(small, (WIDTH, HEIGHT))
-    nebula.set_alpha(120)
-    return nebula
-
-
 def make_stars():
     stars = []
     for i in range(180):
@@ -125,7 +106,6 @@ def update_stars(dt):
 
 background = pg.Surface((WIDTH, HEIGHT)).convert()
 background.fill((6, 7, 20))
-background.blit(make_nebula(), (0, 0))
 stars = make_stars()
 
 
@@ -172,8 +152,7 @@ invuln_timer = 0.0
 flash_timer = 0.0
 wave_banner = 0.0
 
-play_rect = pg.Rect(WIDTH // 2 - 170, 372, 340, 66)
-exit_rect = pg.Rect(WIDTH // 2 - 130, 454, 260, 56)
+play_rect = pg.Rect(WIDTH // 2 - 170, 410, 340, 66)
 
 resume_rect = pg.Rect(WIDTH // 2 - 170, 360, 340, 64)
 pause_menu_rect = pg.Rect(WIDTH // 2 - 170, 442, 340, 64)
@@ -458,34 +437,12 @@ def draw_dark_overlay():
 
 def draw_menu(mouse_pos):
     title = font_title.render("КОСМИЧЕСКИЕ ВОЙНЫ", True, WHITE)
-    screen.blit(title, title.get_rect(center=(WIDTH // 2, 146)))
+    screen.blit(title, title.get_rect(center=(WIDTH // 2, 280)))
 
     subtitle = font_big.render("ЛОЛОЛОШЕК", True, CYAN)
-    screen.blit(subtitle, subtitle.get_rect(center=(WIDTH // 2, 214)))
+    screen.blit(subtitle, subtitle.get_rect(center=(WIDTH // 2, 348)))
 
     draw_button("Играть", play_rect, mouse_pos)
-    draw_button("Выход", exit_rect, mouse_pos)
-
-    hint = font_small.render(
-        "WASD — движение      ПРОБЕЛ — ускорение      ЛКМ — огонь      Esc — пауза",
-        True,
-        (170, 185, 215),
-    )
-    screen.blit(hint, hint.get_rect(center=(WIDTH // 2, 556)))
-
-    rule = font_small.render(
-        "Сбей нужное число астероидов в каждой из трёх волн. Столкновение отнимает жизнь.",
-        True,
-        TEXT_DIM,
-    )
-    screen.blit(rule, rule.get_rect(center=(WIDTH // 2, 592)))
-
-    rec = font_small.render("Рекорд: " + str(record), True, YELLOW)
-    screen.blit(rec, rec.get_rect(center=(WIDTH // 2, 634)))
-
-    bob = math.sin(pg.time.get_ticks() / 400) * 10
-    ship = pg.transform.scale(ships_1[2], (96, 192))
-    screen.blit(ship, ship.get_rect(center=(WIDTH // 2 + 330, 400 + bob)))
 
 
 def draw_pause(mouse_pos):
@@ -555,8 +512,6 @@ def main():
                     if play_rect.collidepoint(event.pos):
                         reset_game()
                         state = "playing"
-                    elif exit_rect.collidepoint(event.pos):
-                        running = False
 
             draw_background()
             draw_menu(mouse_pos)
