@@ -1,0 +1,3 @@
+# Pygame Community Edition — современная сборка Pygame.
+# В коде подключается как обычно: import pygame
+pygame-ce>=2.5.0
