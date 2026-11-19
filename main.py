@@ -1,0 +1,617 @@
+"""Космические войны лололошек — небольшая аркада на Pygame."""
+
+import math
+import os
+import random
+
+import pygame as pg
+
+# ----------------------------------------------------------------------
+#  Настройки игры
+# ----------------------------------------------------------------------
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+WIDTH, HEIGHT = 1280, 720
+FPS = 60
+
+WHITE = (255, 255, 255)
+CYAN = (90, 210, 255)
+YELLOW = (255, 220, 90)
+RED = (255, 90, 90)
+TEXT_DIM = (150, 165, 195)
+
+PLAYER_SPEED = 340
+BOOST_SPEED = 560
+BULLET_SPEED = 900
+SHOOT_DELAY = 0.16
+
+# волны: сколько астероидов нужно сбить, пауза между астероидами, множитель скорости
+WAVES = [
+    (7, 1.10, 1.0),
+    (9, 0.90, 1.25),
+    (11, 0.72, 1.5),
+]
+
+pg.init()
+screen = pg.display.set_mode((WIDTH, HEIGHT))
+pg.display.set_caption("Космические войны лололошек")
+clock = pg.time.Clock()
+
+
+# ----------------------------------------------------------------------
+#  Картинки. Пути собираются от папки с main.py, поэтому игру можно
+#  запускать из любого места.
+# ----------------------------------------------------------------------
+def load_image(folder, name, size):
+    path = os.path.join(BASE_DIR, "assets", folder, name)
+    image = pg.image.load(path).convert_alpha()
+    return pg.transform.scale(image, size)
+
+
+SHIP_SIZE = (64, 128)
+ships_1 = [
+    load_image("SpaceShip", "spaceship1.png", SHIP_SIZE),  # покой
+    load_image("SpaceShip", "spaceship3.png", SHIP_SIZE),  # летит
+    load_image("SpaceShip", "spaceship5.png", SHIP_SIZE),  # ускорение
+]
+ships_2 = [
+    load_image("SpaceShip", "spaceship2.png", SHIP_SIZE),
+    load_image("SpaceShip", "spaceship4.png", SHIP_SIZE),
+    load_image("SpaceShip", "spaceship6.png", SHIP_SIZE),
+]
+
+ASTEROID_SIZE = (64, 64)
+asteroid_images = [
+    load_image("Asteroid", "Asteroid1.png", ASTEROID_SIZE),  # целый
+    load_image("Asteroid", "Asteroid2.png", ASTEROID_SIZE),  # треснутый
+    load_image("Asteroid", "Asteroid3.png", ASTEROID_SIZE),  # обломки
+]
+
+bullet_yellow = load_image("Bull", "bull1.png", (14, 30))
+bullet_blue = load_image("Bull", "bull2.png", (14, 30))
+
+
+# ----------------------------------------------------------------------
+#  Шрифты
+# ----------------------------------------------------------------------
+def make_font(size, bold=False):
+    return pg.font.SysFont("arial", size, bold=bold)
+
+
+font_title = make_font(64, True)
+font_big = make_font(42, True)
+font_hud = make_font(26, True)
+font_button = make_font(30, True)
+font_small = make_font(20)
+
+
+# ----------------------------------------------------------------------
+#  Фон: туманность рисуется один раз при запуске
+# ----------------------------------------------------------------------
+def make_nebula():
+    # рисуем в маленьком размере, а потом растягиваем — так круги размываются
+    small = pg.Surface((WIDTH // 4, HEIGHT // 4), pg.SRCALPHA)
+    colors = [(32, 58, 120), (62, 34, 104), (18, 74, 118)]
+    for i in range(34):
+        radius = random.randint(26, 64)
+        blob = pg.Surface((radius * 2, radius * 2), pg.SRCALPHA)
+        color = random.choice(colors)
+        for step in range(5):
+            r = int(radius * (1 - step / 6))
+            pg.draw.circle(blob, (color[0], color[1], color[2], 9), (radius, radius), r)
+        x = random.randint(-60, small.get_width()) - radius
+        y = random.randint(-60, small.get_height()) - radius
+        small.blit(blob, (x, y), special_flags=pg.BLEND_RGBA_ADD)
+    nebula = pg.transform.smoothscale(small, (WIDTH, HEIGHT))
+    nebula.set_alpha(120)
+    return nebula
+
+
+def make_stars():
+    stars = []
+    for i in range(180):
+        speed = random.choice([25, 45, 80])
+        size = 1 if speed == 25 else (2 if speed == 45 else 3)
+        stars.append([random.randint(0, WIDTH), random.randint(0, HEIGHT), speed, size])
+    return stars
+
+
+def update_stars(dt):
+    for star in stars:
+        star[1] += star[2] * dt
+        if star[1] > HEIGHT:
+            star[1] = -2
+            star[0] = random.randint(0, WIDTH)
+
+
+background = pg.Surface((WIDTH, HEIGHT)).convert()
+background.fill((6, 7, 20))
+background.blit(make_nebula(), (0, 0))
+stars = make_stars()
+
+
+# ----------------------------------------------------------------------
+#  Рекорд хранится в файле рядом с игрой
+# ----------------------------------------------------------------------
+def load_record():
+    try:
+        with open(os.path.join(BASE_DIR, "record.txt"), encoding="utf-8") as file:
+            return int(file.read().strip())
+    except (OSError, ValueError):
+        return 0
+
+
+def save_record(value):
+    try:
+        with open(os.path.join(BASE_DIR, "record.txt"), "w", encoding="utf-8") as file:
+            file.write(str(value))
+    except OSError:
+        pass
+
+
+# ----------------------------------------------------------------------
+#  Состояние игры
+# ----------------------------------------------------------------------
+state = "menu"
+record = load_record()
+
+player_x = WIDTH / 2
+player_y = HEIGHT - 160
+lives = 3
+score = 0
+wave = 1
+wave_kills = 0
+level = 1
+
+asteroids = []
+bullets = []
+particles = []
+
+spawn_timer = 0.8
+shoot_timer = 0.0
+invuln_timer = 0.0
+flash_timer = 0.0
+wave_banner = 0.0
+
+play_rect = pg.Rect(WIDTH // 2 - 170, 372, 340, 66)
+exit_rect = pg.Rect(WIDTH // 2 - 130, 454, 260, 56)
+
+resume_rect = pg.Rect(WIDTH // 2 - 170, 360, 340, 64)
+pause_menu_rect = pg.Rect(WIDTH // 2 - 170, 442, 340, 64)
+
+again_rect = pg.Rect(WIDTH // 2 - 170, 430, 340, 64)
+finish_menu_rect = pg.Rect(WIDTH // 2 - 170, 512, 340, 64)
+
+
+def reset_game():
+    """Возвращает все переменные в начальное состояние и запускает первую волну."""
+    global player_x, player_y, lives, score, wave_kills, level
+    global asteroids, bullets, particles
+    global spawn_timer, shoot_timer, invuln_timer, flash_timer, wave_banner
+
+    player_x = WIDTH / 2
+    player_y = HEIGHT - 160
+    lives = 3
+    score = 0
+    wave_kills = 0
+    level = 1
+    asteroids = []
+    bullets = []
+    particles = []
+    spawn_timer = 0.8
+    shoot_timer = 0.0
+    invuln_timer = 0.0
+    flash_timer = 0.0
+    wave_banner = 0.0
+    start_wave(1)
+
+
+def start_wave(number):
+    global wave, wave_kills, spawn_timer, wave_banner, level
+
+    wave = number
+    wave_kills = 0
+    spawn_timer = 0.7
+    wave_banner = 2.0
+    # со второй волны корабль выглядит мощнее и стреляет синими зарядами
+    level = 1 if number == 1 else 2
+
+
+def spawn_asteroid():
+    need, pause, speed_factor = WAVES[wave - 1]
+    asteroids.append({
+        "x": random.randint(70, WIDTH - 70),
+        "y": -80,
+        "hp": 3,
+        "speed": random.uniform(70, 110) * speed_factor,
+        "angle": random.uniform(0, 360),
+        "spin": random.uniform(-45, 45),
+    })
+
+
+def shoot():
+    global shoot_timer
+    bullets.append([player_x, player_y - 62])
+    shoot_timer = SHOOT_DELAY
+
+
+def explode(x, y, count, color):
+    for i in range(count):
+        angle = random.uniform(0, math.pi * 2)
+        speed = random.uniform(40, 260)
+        life = random.uniform(0.3, 0.8)
+        particles.append({
+            "x": x,
+            "y": y,
+            "vx": math.cos(angle) * speed,
+            "vy": math.sin(angle) * speed,
+            "life": life,
+            "full": life,
+            "size": random.choice([2, 3, 4]),
+            "color": color,
+        })
+
+
+def circles_hit(x1, y1, r1, x2, y2, r2):
+    """Проверка столкновения двух кругов."""
+    dx = x1 - x2
+    dy = y1 - y2
+    return dx * dx + dy * dy < (r1 + r2) ** 2
+
+
+def finish_game(player_won):
+    global state, record
+
+    state = "win" if player_won else "over"
+    if score > record:
+        record = score
+        save_record(record)
+
+
+def player_image():
+    """Кадр корабля зависит от нажатых клавиш и уровня."""
+    keys = pg.key.get_pressed()
+    ship_set = ships_2 if level == 2 else ships_1
+
+    if keys[pg.K_SPACE]:
+        return ship_set[2]
+    if keys[pg.K_w] or keys[pg.K_s] or keys[pg.K_a] or keys[pg.K_d]:
+        return ship_set[1]
+    return ship_set[0]
+
+
+# ----------------------------------------------------------------------
+#  Обновление игрового процесса
+# ----------------------------------------------------------------------
+def update_playing(dt):
+    global player_x, player_y, lives, score, wave_kills, wave
+    global bullets, asteroids, particles, spawn_timer, shoot_timer
+    global invuln_timer, flash_timer, wave_banner
+
+    keys = pg.key.get_pressed()
+    current_speed = BOOST_SPEED if keys[pg.K_SPACE] else PLAYER_SPEED
+
+    if keys[pg.K_w]:
+        player_y -= current_speed * dt
+    if keys[pg.K_s]:
+        player_y += current_speed * dt
+    if keys[pg.K_a]:
+        player_x -= current_speed * dt
+    if keys[pg.K_d]:
+        player_x += current_speed * dt
+
+    player_x = max(40, min(player_x, WIDTH - 40))
+    player_y = max(120, min(player_y, HEIGHT - 60))
+
+    # стрельба
+    shoot_timer -= dt
+    if pg.mouse.get_pressed()[0] and shoot_timer <= 0:
+        shoot()
+
+    for bullet in bullets:
+        bullet[1] -= BULLET_SPEED * dt
+    bullets = [bullet for bullet in bullets if bullet[1] > -40]
+
+    # астероиды появляются, пока не сбито нужное число
+    spawn_timer -= dt
+    if wave_kills < WAVES[wave - 1][0] and spawn_timer <= 0:
+        spawn_asteroid()
+        spawn_timer = WAVES[wave - 1][1]
+
+    for asteroid in asteroids:
+        asteroid["y"] += asteroid["speed"] * dt
+        asteroid["angle"] += asteroid["spin"] * dt
+    asteroids = [asteroid for asteroid in asteroids if asteroid["y"] < HEIGHT + 100]
+
+    # попадания пуль по астероидам
+    for bullet in bullets[:]:
+        for asteroid in asteroids[:]:
+            if circles_hit(bullet[0], bullet[1], 4, asteroid["x"], asteroid["y"], 28):
+                bullets.remove(bullet)
+                asteroid["hp"] -= 1
+                if asteroid["hp"] <= 0:
+                    asteroids.remove(asteroid)
+                    explode(asteroid["x"], asteroid["y"], 20, (255, 175, 70))
+                    score += 10
+                    wave_kills += 1
+                else:
+                    explode(asteroid["x"], asteroid["y"], 6, (205, 210, 225))
+                break
+
+    # столкновение астероида с кораблём
+    if invuln_timer > 0:
+        invuln_timer -= dt
+
+    for asteroid in asteroids[:]:
+        if circles_hit(player_x, player_y, 26, asteroid["x"], asteroid["y"], 28):
+            if invuln_timer <= 0:
+                lives -= 1
+                invuln_timer = 2.0
+                flash_timer = 0.35
+                explode(player_x, player_y, 26, (110, 220, 255))
+                asteroids.remove(asteroid)
+                if lives <= 0:
+                    finish_game(False)
+                    return
+
+    # частицы
+    for particle in particles:
+        particle["x"] += particle["vx"] * dt
+        particle["y"] += particle["vy"] * dt
+        particle["vx"] *= 0.98
+        particle["vy"] *= 0.98
+        particle["life"] -= dt
+    particles = [particle for particle in particles if particle["life"] > 0]
+
+    if flash_timer > 0:
+        flash_timer -= dt
+    if wave_banner > 0:
+        wave_banner -= dt
+
+    # волна закончена: нужное число сбито и на экране пусто
+    if wave_kills >= WAVES[wave - 1][0] and not asteroids:
+        if wave >= len(WAVES):
+            finish_game(True)
+        else:
+            start_wave(wave + 1)
+
+
+# ----------------------------------------------------------------------
+#  Отрисовка
+# ----------------------------------------------------------------------
+def draw_background():
+    screen.blit(background, (0, 0))
+    for star in stars:
+        x, y, speed, size = star
+        brightness = 90 + size * 55
+        color = (brightness, brightness, min(255, brightness + 40))
+        pg.draw.circle(screen, color, (int(x), int(y)), size)
+
+
+def draw_world():
+    for asteroid in asteroids:
+        image = pg.transform.rotate(asteroid_images[3 - asteroid["hp"]], asteroid["angle"])
+        screen.blit(image, image.get_rect(center=(asteroid["x"], asteroid["y"])))
+
+    bullet_image = bullet_blue if level == 2 else bullet_yellow
+    for bullet in bullets:
+        screen.blit(bullet_image, bullet_image.get_rect(center=(bullet[0], bullet[1])))
+
+    for particle in particles:
+        fade = max(0.0, min(1.0, particle["life"] / particle["full"]))
+        color = (
+            int(particle["color"][0] * fade),
+            int(particle["color"][1] * fade),
+            int(particle["color"][2] * fade),
+        )
+        size = particle["size"]
+        pg.draw.rect(screen, color, (int(particle["x"]), int(particle["y"]), size, size))
+
+    if invuln_timer <= 0 or int(invuln_timer * 12) % 2 == 0:
+        ship = player_image()
+        screen.blit(ship, ship.get_rect(center=(player_x, player_y)))
+
+
+def draw_hud():
+    score_text = font_hud.render("Очки: " + str(score), True, WHITE)
+    screen.blit(score_text, (26, 20))
+
+    record_text = font_small.render("Рекорд: " + str(record), True, CYAN)
+    screen.blit(record_text, (26, 54))
+
+    for i in range(lives):
+        icon = pg.transform.scale(ships_1[0], (18, 36))
+        screen.blit(icon, (WIDTH - 44 - i * 30, 22))
+
+    wave_text = font_hud.render("Волна " + str(wave) + "/" + str(len(WAVES)), True, WHITE)
+    screen.blit(wave_text, wave_text.get_rect(midtop=(WIDTH // 2, 18)))
+
+    need = WAVES[wave - 1][0]
+    progress = font_small.render("Сбито: " + str(wave_kills) + "/" + str(need), True, TEXT_DIM)
+    screen.blit(progress, progress.get_rect(midtop=(WIDTH // 2, 52)))
+
+    if wave_banner > 0:
+        banner = font_title.render("ВОЛНА " + str(wave), True, CYAN)
+        banner.set_alpha(int(min(255, wave_banner * 200)))
+        screen.blit(banner, banner.get_rect(center=(WIDTH // 2, HEIGHT // 2 - 130)))
+
+    if flash_timer > 0:
+        flash = pg.Surface((WIDTH, HEIGHT))
+        flash.fill((110, 0, 0))
+        flash.set_alpha(int(150 * flash_timer / 0.35))
+        screen.blit(flash, (0, 0))
+
+
+def draw_button(text, rect, mouse_pos):
+    hover = rect.collidepoint(mouse_pos)
+    color = (38, 108, 168) if hover else (24, 66, 110)
+    pg.draw.rect(screen, color, rect, border_radius=14)
+    pg.draw.rect(screen, CYAN if hover else (60, 130, 180), rect, width=2, border_radius=14)
+    label = font_button.render(text, True, WHITE)
+    screen.blit(label, label.get_rect(center=rect.center))
+
+
+def draw_dark_overlay():
+    overlay = pg.Surface((WIDTH, HEIGHT), pg.SRCALPHA)
+    overlay.fill((4, 6, 16, 200))
+    screen.blit(overlay, (0, 0))
+
+
+def draw_menu(mouse_pos):
+    title = font_title.render("КОСМИЧЕСКИЕ ВОЙНЫ", True, WHITE)
+    screen.blit(title, title.get_rect(center=(WIDTH // 2, 146)))
+
+    subtitle = font_big.render("ЛОЛОЛОШЕК", True, CYAN)
+    screen.blit(subtitle, subtitle.get_rect(center=(WIDTH // 2, 214)))
+
+    draw_button("Играть", play_rect, mouse_pos)
+    draw_button("Выход", exit_rect, mouse_pos)
+
+    hint = font_small.render(
+        "WASD — движение      ПРОБЕЛ — ускорение      ЛКМ — огонь      Esc — пауза",
+        True,
+        (170, 185, 215),
+    )
+    screen.blit(hint, hint.get_rect(center=(WIDTH // 2, 556)))
+
+    rule = font_small.render(
+        "Сбей нужное число астероидов в каждой из трёх волн. Столкновение отнимает жизнь.",
+        True,
+        TEXT_DIM,
+    )
+    screen.blit(rule, rule.get_rect(center=(WIDTH // 2, 592)))
+
+    rec = font_small.render("Рекорд: " + str(record), True, YELLOW)
+    screen.blit(rec, rec.get_rect(center=(WIDTH // 2, 634)))
+
+    bob = math.sin(pg.time.get_ticks() / 400) * 10
+    ship = pg.transform.scale(ships_1[2], (96, 192))
+    screen.blit(ship, ship.get_rect(center=(WIDTH // 2 + 330, 400 + bob)))
+
+
+def draw_pause(mouse_pos):
+    draw_dark_overlay()
+    title = font_title.render("ПАУЗА", True, WHITE)
+    screen.blit(title, title.get_rect(center=(WIDTH // 2, 250)))
+
+    draw_button("Продолжить", resume_rect, mouse_pos)
+    draw_button("В меню", pause_menu_rect, mouse_pos)
+
+    hint = font_small.render("Esc — продолжить,  Q — выход в меню", True, TEXT_DIM)
+    screen.blit(hint, hint.get_rect(center=(WIDTH // 2, 530)))
+
+
+def draw_finish(player_won, mouse_pos):
+    draw_dark_overlay()
+
+    title_text = "ПОБЕДА!" if player_won else "ИГРА ОКОНЧЕНА"
+    title_color = CYAN if player_won else RED
+    title = font_title.render(title_text, True, title_color)
+    screen.blit(title, title.get_rect(center=(WIDTH // 2, 200)))
+
+    if player_won:
+        subtitle_text = "Все три волны отбиты, космос снова чист."
+    else:
+        subtitle_text = "Корабль уничтожен, но рекорд остался с тобой."
+    subtitle = font_small.render(subtitle_text, True, (200, 210, 230))
+    screen.blit(subtitle, subtitle.get_rect(center=(WIDTH // 2, 256)))
+
+    score_text = font_big.render("Очки: " + str(score), True, WHITE)
+    screen.blit(score_text, score_text.get_rect(center=(WIDTH // 2, 320)))
+
+    record_text = font_small.render("Рекорд: " + str(record), True, YELLOW)
+    screen.blit(record_text, record_text.get_rect(center=(WIDTH // 2, 368)))
+
+    draw_button("Играть снова", again_rect, mouse_pos)
+    draw_button("В меню", finish_menu_rect, mouse_pos)
+
+
+# ----------------------------------------------------------------------
+#  Главный цикл
+# ----------------------------------------------------------------------
+def main():
+    global state
+
+    running = True
+    while running:
+        dt = min(clock.tick(FPS) / 1000, 0.05)
+        events = pg.event.get()
+        mouse_pos = pg.mouse.get_pos()
+
+        for event in events:
+            if event.type == pg.QUIT:
+                running = False
+
+        update_stars(dt)
+
+        if state == "menu":
+            for event in events:
+                if event.type == pg.KEYDOWN:
+                    if event.key == pg.K_RETURN:
+                        reset_game()
+                        state = "playing"
+                    elif event.key == pg.K_ESCAPE:
+                        running = False
+                elif event.type == pg.MOUSEBUTTONDOWN and event.button == 1:
+                    if play_rect.collidepoint(event.pos):
+                        reset_game()
+                        state = "playing"
+                    elif exit_rect.collidepoint(event.pos):
+                        running = False
+
+            draw_background()
+            draw_menu(mouse_pos)
+
+        else:
+            if state == "playing":
+                for event in events:
+                    if event.type == pg.KEYDOWN and event.key == pg.K_ESCAPE:
+                        state = "paused"
+                if state == "playing":
+                    update_playing(dt)
+
+            elif state == "paused":
+                for event in events:
+                    if event.type == pg.KEYDOWN:
+                        if event.key == pg.K_ESCAPE:
+                            state = "playing"
+                        elif event.key == pg.K_q:
+                            state = "menu"
+                    elif event.type == pg.MOUSEBUTTONDOWN and event.button == 1:
+                        if resume_rect.collidepoint(event.pos):
+                            state = "playing"
+                        elif pause_menu_rect.collidepoint(event.pos):
+                            state = "menu"
+
+            else:  # "over" или "win"
+                for event in events:
+                    if event.type == pg.KEYDOWN:
+                        if event.key == pg.K_r or event.key == pg.K_RETURN:
+                            reset_game()
+                            state = "playing"
+                        elif event.key == pg.K_ESCAPE:
+                            state = "menu"
+                    elif event.type == pg.MOUSEBUTTONDOWN and event.button == 1:
+                        if again_rect.collidepoint(event.pos):
+                            reset_game()
+                            state = "playing"
+                        elif finish_menu_rect.collidepoint(event.pos):
+                            state = "menu"
+
+            draw_background()
+            draw_world()
+            draw_hud()
+
+            if state == "paused":
+                draw_pause(mouse_pos)
+            elif state == "over":
+                draw_finish(False, mouse_pos)
+            elif state == "win":
+                draw_finish(True, mouse_pos)
+
+        pg.display.flip()
+
+    pg.quit()
+
+
+if __name__ == "__main__":
+    main()
