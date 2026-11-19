@@ -15,7 +15,6 @@ FPS = 60
 
 WHITE = (255, 255, 255)
 CYAN = (90, 210, 255)
-YELLOW = (255, 220, 90)
 RED = (255, 90, 90)
 TEXT_DIM = (150, 165, 195)
 
@@ -24,12 +23,10 @@ BOOST_SPEED = 560
 BULLET_SPEED = 900
 SHOOT_DELAY = 0.16
 
-# волны: сколько астероидов нужно сбить, пауза между астероидами, множитель скорости
-WAVES = [
-    (7, 1.10, 1.0),
-    (9, 0.90, 1.25),
-    (11, 0.72, 1.5),
-]
+# бесконечный режим: пауза между астероидами сокращается с ростом очков
+SPAWN_START = 1.0
+SPAWN_MIN = 0.38
+MAX_DIFFICULTY_SCORE = 900  # при таком счёте сложность максимальная
 
 pg.init()
 screen = pg.display.set_mode((WIDTH, HEIGHT))
@@ -110,37 +107,14 @@ stars = make_stars()
 
 
 # ----------------------------------------------------------------------
-#  Рекорд хранится в файле рядом с игрой
-# ----------------------------------------------------------------------
-def load_record():
-    try:
-        with open(os.path.join(BASE_DIR, "record.txt"), encoding="utf-8") as file:
-            return int(file.read().strip())
-    except (OSError, ValueError):
-        return 0
-
-
-def save_record(value):
-    try:
-        with open(os.path.join(BASE_DIR, "record.txt"), "w", encoding="utf-8") as file:
-            file.write(str(value))
-    except OSError:
-        pass
-
-
-# ----------------------------------------------------------------------
 #  Состояние игры
 # ----------------------------------------------------------------------
 state = "menu"
-record = load_record()
 
 player_x = WIDTH / 2
 player_y = HEIGHT - 160
 lives = 3
 score = 0
-wave = 1
-wave_kills = 0
-level = 1
 
 asteroids = []
 bullets = []
@@ -150,7 +124,6 @@ spawn_timer = 0.8
 shoot_timer = 0.0
 invuln_timer = 0.0
 flash_timer = 0.0
-wave_banner = 0.0
 
 play_rect = pg.Rect(WIDTH // 2 - 170, 410, 340, 66)
 
@@ -162,17 +135,15 @@ finish_menu_rect = pg.Rect(WIDTH // 2 - 170, 512, 340, 64)
 
 
 def reset_game():
-    """Возвращает все переменные в начальное состояние и запускает первую волну."""
-    global player_x, player_y, lives, score, wave_kills, level
+    """Возвращает все переменные в начальное состояние."""
+    global player_x, player_y, lives, score
     global asteroids, bullets, particles
-    global spawn_timer, shoot_timer, invuln_timer, flash_timer, wave_banner
+    global spawn_timer, shoot_timer, invuln_timer, flash_timer
 
     player_x = WIDTH / 2
     player_y = HEIGHT - 160
     lives = 3
     score = 0
-    wave_kills = 0
-    level = 1
     asteroids = []
     bullets = []
     particles = []
@@ -180,28 +151,24 @@ def reset_game():
     shoot_timer = 0.0
     invuln_timer = 0.0
     flash_timer = 0.0
-    wave_banner = 0.0
-    start_wave(1)
 
 
-def start_wave(number):
-    global wave, wave_kills, spawn_timer, wave_banner, level
+def difficulty():
+    """Чем больше очков, тем чаще и быстрее летят астероиды."""
+    return min(1.0, score / MAX_DIFFICULTY_SCORE)
 
-    wave = number
-    wave_kills = 0
-    spawn_timer = 0.7
-    wave_banner = 2.0
-    # со второй волны корабль выглядит мощнее и стреляет синими зарядами
-    level = 1 if number == 1 else 2
+
+def improved_ship():
+    """С 70 очков корабль выглядит мощнее и стреляет синими зарядами."""
+    return score >= 70
 
 
 def spawn_asteroid():
-    need, pause, speed_factor = WAVES[wave - 1]
     asteroids.append({
         "x": random.randint(70, WIDTH - 70),
         "y": -80,
         "hp": 3,
-        "speed": random.uniform(70, 110) * speed_factor,
+        "speed": random.uniform(70, 110) * (1 + 0.9 * difficulty()),
         "angle": random.uniform(0, 360),
         "spin": random.uniform(-45, 45),
     })
@@ -237,19 +204,15 @@ def circles_hit(x1, y1, r1, x2, y2, r2):
     return dx * dx + dy * dy < (r1 + r2) ** 2
 
 
-def finish_game(player_won):
-    global state, record
-
-    state = "win" if player_won else "over"
-    if score > record:
-        record = score
-        save_record(record)
+def finish_game():
+    global state
+    state = "over"
 
 
 def player_image():
-    """Кадр корабля зависит от нажатых клавиш и уровня."""
+    """Кадр корабля зависит от нажатых клавиш и счёта."""
     keys = pg.key.get_pressed()
-    ship_set = ships_2 if level == 2 else ships_1
+    ship_set = ships_2 if improved_ship() else ships_1
 
     if keys[pg.K_SPACE]:
         return ship_set[2]
@@ -262,9 +225,9 @@ def player_image():
 #  Обновление игрового процесса
 # ----------------------------------------------------------------------
 def update_playing(dt):
-    global player_x, player_y, lives, score, wave_kills, wave
+    global player_x, player_y, lives, score
     global bullets, asteroids, particles, spawn_timer, shoot_timer
-    global invuln_timer, flash_timer, wave_banner
+    global invuln_timer, flash_timer
 
     keys = pg.key.get_pressed()
     current_speed = BOOST_SPEED if keys[pg.K_SPACE] else PLAYER_SPEED
@@ -290,11 +253,11 @@ def update_playing(dt):
         bullet[1] -= BULLET_SPEED * dt
     bullets = [bullet for bullet in bullets if bullet[1] > -40]
 
-    # астероиды появляются, пока не сбито нужное число
+    # астероиды летят всё время, пауза между ними сокращается со счётом
     spawn_timer -= dt
-    if wave_kills < WAVES[wave - 1][0] and spawn_timer <= 0:
+    if spawn_timer <= 0:
         spawn_asteroid()
-        spawn_timer = WAVES[wave - 1][1]
+        spawn_timer = SPAWN_START - (SPAWN_START - SPAWN_MIN) * difficulty()
 
     for asteroid in asteroids:
         asteroid["y"] += asteroid["speed"] * dt
@@ -311,7 +274,6 @@ def update_playing(dt):
                     asteroids.remove(asteroid)
                     explode(asteroid["x"], asteroid["y"], 20, (255, 175, 70))
                     score += 10
-                    wave_kills += 1
                 else:
                     explode(asteroid["x"], asteroid["y"], 6, (205, 210, 225))
                 break
@@ -329,7 +291,7 @@ def update_playing(dt):
                 explode(player_x, player_y, 26, (110, 220, 255))
                 asteroids.remove(asteroid)
                 if lives <= 0:
-                    finish_game(False)
+                    finish_game()
                     return
 
     # частицы
@@ -343,15 +305,6 @@ def update_playing(dt):
 
     if flash_timer > 0:
         flash_timer -= dt
-    if wave_banner > 0:
-        wave_banner -= dt
-
-    # волна закончена: нужное число сбито и на экране пусто
-    if wave_kills >= WAVES[wave - 1][0] and not asteroids:
-        if wave >= len(WAVES):
-            finish_game(True)
-        else:
-            start_wave(wave + 1)
 
 
 # ----------------------------------------------------------------------
@@ -371,7 +324,7 @@ def draw_world():
         image = pg.transform.rotate(asteroid_images[3 - asteroid["hp"]], asteroid["angle"])
         screen.blit(image, image.get_rect(center=(asteroid["x"], asteroid["y"])))
 
-    bullet_image = bullet_blue if level == 2 else bullet_yellow
+    bullet_image = bullet_blue if improved_ship() else bullet_yellow
     for bullet in bullets:
         screen.blit(bullet_image, bullet_image.get_rect(center=(bullet[0], bullet[1])))
 
@@ -394,24 +347,8 @@ def draw_hud():
     score_text = font_hud.render("Очки: " + str(score), True, WHITE)
     screen.blit(score_text, (26, 20))
 
-    record_text = font_small.render("Рекорд: " + str(record), True, CYAN)
-    screen.blit(record_text, (26, 54))
-
-    for i in range(lives):
-        icon = pg.transform.scale(ships_1[0], (18, 36))
-        screen.blit(icon, (WIDTH - 44 - i * 30, 22))
-
-    wave_text = font_hud.render("Волна " + str(wave) + "/" + str(len(WAVES)), True, WHITE)
-    screen.blit(wave_text, wave_text.get_rect(midtop=(WIDTH // 2, 18)))
-
-    need = WAVES[wave - 1][0]
-    progress = font_small.render("Сбито: " + str(wave_kills) + "/" + str(need), True, TEXT_DIM)
-    screen.blit(progress, progress.get_rect(midtop=(WIDTH // 2, 52)))
-
-    if wave_banner > 0:
-        banner = font_title.render("ВОЛНА " + str(wave), True, CYAN)
-        banner.set_alpha(int(min(255, wave_banner * 200)))
-        screen.blit(banner, banner.get_rect(center=(WIDTH // 2, HEIGHT // 2 - 130)))
+    lives_text = font_hud.render("Жизни: " + str(lives), True, CYAN)
+    screen.blit(lives_text, lives_text.get_rect(topright=(WIDTH - 26, 20)))
 
     if flash_timer > 0:
         flash = pg.Surface((WIDTH, HEIGHT))
@@ -457,26 +394,21 @@ def draw_pause(mouse_pos):
     screen.blit(hint, hint.get_rect(center=(WIDTH // 2, 530)))
 
 
-def draw_finish(player_won, mouse_pos):
+def draw_finish(mouse_pos):
     draw_dark_overlay()
 
-    title_text = "ПОБЕДА!" if player_won else "ИГРА ОКОНЧЕНА"
-    title_color = CYAN if player_won else RED
-    title = font_title.render(title_text, True, title_color)
+    title = font_title.render("ИГРА ОКОНЧЕНА", True, RED)
     screen.blit(title, title.get_rect(center=(WIDTH // 2, 200)))
 
-    if player_won:
-        subtitle_text = "Все три волны отбиты, космос снова чист."
-    else:
-        subtitle_text = "Корабль уничтожен, но рекорд остался с тобой."
-    subtitle = font_small.render(subtitle_text, True, (200, 210, 230))
+    subtitle = font_small.render(
+        "Корабль уничтожен. В следующем заходе продержись дольше.",
+        True,
+        (200, 210, 230),
+    )
     screen.blit(subtitle, subtitle.get_rect(center=(WIDTH // 2, 256)))
 
     score_text = font_big.render("Очки: " + str(score), True, WHITE)
     screen.blit(score_text, score_text.get_rect(center=(WIDTH // 2, 320)))
-
-    record_text = font_small.render("Рекорд: " + str(record), True, YELLOW)
-    screen.blit(record_text, record_text.get_rect(center=(WIDTH // 2, 368)))
 
     draw_button("Играть снова", again_rect, mouse_pos)
     draw_button("В меню", finish_menu_rect, mouse_pos)
@@ -537,7 +469,7 @@ def main():
                         elif pause_menu_rect.collidepoint(event.pos):
                             state = "menu"
 
-            else:  # "over" или "win"
+            else:  # "over"
                 for event in events:
                     if event.type == pg.KEYDOWN:
                         if event.key == pg.K_r or event.key == pg.K_RETURN:
@@ -559,9 +491,7 @@ def main():
             if state == "paused":
                 draw_pause(mouse_pos)
             elif state == "over":
-                draw_finish(False, mouse_pos)
-            elif state == "win":
-                draw_finish(True, mouse_pos)
+                draw_finish(mouse_pos)
 
         pg.display.flip()
 

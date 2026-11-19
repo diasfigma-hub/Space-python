@@ -222,5 +222,4 @@ __marimo__/
 # Streamlit
 .streamlit/secrets.toml
 
-# Данные игры (рекорд создаётся при запуске)
-record.txt
+
